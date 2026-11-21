@@ -1,14 +1,8 @@
-#!/usr/bin/env python3
-"""Draw Saturday 21 November 2026 as a one-page newspaper front page.
+"""Draw the front page for Saturday 21 November 2026.
 
-Reads stories.json beside this file (a masthead date, one lead story,
-four grid stories, two bottom stories and a footer line) and paints
-entry.png at 1024x1024 with Pillow. Each story gets a small flat
-illustration drawn with basic shapes, so the whole day can be taken
-in from the single image. This is a local build step only; the entry
-program (main.py) ships the finished PNG unchanged.
-
-Run from this folder:  python3 generate.py
+Reads stories.json next to this file and renders a 1024x1024 newspaper
+front page with PIL. Everything is drawn from primitives and text, so
+the output is deterministic: same input, same bytes.
 """
 
 import json
@@ -17,303 +11,366 @@ import os
 
 from PIL import Image, ImageDraw, ImageFont
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
-SIDE = 1024
-EDGE = 42
-GAP = 22
-COLUMN = (SIDE - 2 * EDGE - GAP) // 2
+HERE = os.path.dirname(os.path.abspath(__file__))
 
-INK = (22, 22, 22)
-SOFT = (78, 76, 70)
-FAINT = (150, 146, 138)
-PAPER = (252, 250, 244)
-CARD = (255, 255, 255)
-ACCENT = (166, 30, 30)
-WASH = (240, 236, 226)
-SKY = (205, 226, 240)
-SEA = (110, 158, 196)
-LEAF = (74, 140, 74)
-AMBER = (214, 150, 32)
-NIGHT = (28, 34, 64)
+W = 1024
+H = 1024
 
-FONT_DIR = "/usr/share/fonts/truetype/dejavu"
+PAPER = (247, 243, 233)
+INK = (26, 24, 22)
+MUTED = (96, 90, 80)
+RED = (176, 32, 40)
+NAVY = (18, 32, 58)
+NAVY_LIGHT = (34, 54, 92)
+GOLD = (196, 148, 52)
+RULE = (26, 24, 22)
+
+SERIF_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf"
+SANS = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+SANS_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
 
-def typeface(points, bold=False, serif=False):
-    if serif:
-        name = "DejaVuSerif-Bold.ttf" if bold else "DejaVuSerif.ttf"
-    else:
-        name = "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"
+def font(path, size):
     try:
-        return ImageFont.truetype(os.path.join(FONT_DIR, name), points)
+        return ImageFont.truetype(path, size)
     except OSError:
         return ImageFont.load_default()
 
 
-def split_lines(pen, text, face, limit):
-    """Greedy wrap: pack words onto a line while the line still fits."""
-    out, line = [], ""
+def wrap(draw, text, fnt, max_width):
+    """Split text into lines that fit max_width pixels."""
+    lines = []
+    current = ""
     for word in text.split():
-        candidate = word if not line else line + " " + word
-        if line and pen.textlength(candidate, font=face) > limit:
-            out.append(line)
-            line = word
+        trial = word if not current else current + " " + word
+        if draw.textlength(trial, font=fnt) <= max_width:
+            current = trial
         else:
-            line = candidate
-    if line:
-        out.append(line)
-    return out
+            if current:
+                lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
+    return lines
 
 
-def paint_lines(pen, x, y, lines, face, colour, step):
-    for chunk in lines:
-        pen.text((x, y), chunk, font=face, fill=colour)
-        y += step
+def draw_text_block(draw, x, y, text, fnt, fill, max_width, leading=None):
+    """Draw wrapped text starting at (x, y); return the y just below it."""
+    if leading is None:
+        leading = int(fnt.size * 1.22)
+    for line in wrap(draw, text, fnt, max_width):
+        draw.text((x, y), line, font=fnt, fill=fill)
+        y += leading
     return y
 
 
-def centred(pen, y, text, face, colour):
-    width = pen.textlength(text, font=face)
-    pen.text(((SIDE - width) / 2, y), text, font=face, fill=colour)
-    return y + face.size
+def dashed_arc(draw, box, start, end, fill, width=3, dash=14, gap=10):
+    """Draw an arc as dashes by stamping short arc segments."""
+    cx = (box[0] + box[2]) / 2.0
+    cy = (box[1] + box[3]) / 2.0
+    rx = (box[2] - box[0]) / 2.0
+    ry = (box[3] - box[1]) / 2.0
+    total = math.radians(end - start)
+    steps = max(8, int(total * max(rx, ry) / 4))
+    seg = dash + gap
+    drawn = 0.0
+    prev = None
+    for i in range(steps + 1):
+        t = i / steps
+        ang = math.radians(start) + total * t
+        px = cx + rx * math.cos(ang)
+        py = cy + ry * math.sin(ang)
+        if prev is not None:
+            seg_len = math.hypot(px - prev[0], py - prev[1])
+            if (drawn % seg) < dash:
+                draw.line([prev, (px, py)], fill=fill, width=width)
+            drawn += seg_len
+        prev = (px, py)
 
 
-# ------------------------------------------------------------------ art
-def art_missile(pen, box):
-    """Lead art: a missile arc coming down on a Polish flag."""
-    x0, y0, x1, y1 = box
-    pen.rectangle(box, fill=SKY)
-    pen.rectangle([x0, y1 - 28, x1, y1], fill=(120, 150, 90))
-    # Polish flag on a pole, lower left
-    pole_x = x0 + 60
-    pen.line([pole_x, y0 + 60, pole_x, y1 - 28], fill=INK, width=5)
-    pen.rectangle([pole_x, y0 + 60, pole_x + 110, y0 + 92], fill=CARD,
-                  outline=INK, width=2)
-    pen.rectangle([pole_x, y0 + 92, pole_x + 110, y0 + 124], fill=ACCENT,
-                  outline=INK, width=2)
-    # missile arc from top-right down toward the ground
-    for t in range(9):
-        frac = t / 8
-        mx = x1 - 60 - frac * 200
-        my = y0 + 44 + frac * frac * 150
-        r = 4 + frac * 4
-        pen.ellipse([mx - r, my - r, mx + r, my + r], fill=(200, 200, 200),
-                    outline=FAINT, width=1)
-    tip_x, tip_y = x1 - 268, y0 + 206
-    pen.polygon([(tip_x, tip_y), (tip_x + 26, tip_y - 14),
-                 (tip_x + 34, tip_y - 4)], fill=INK)
-    # impact burst
-    for ang in range(0, 360, 45):
-        rad = math.radians(ang)
-        pen.line([tip_x + 6, tip_y + 4,
-                  tip_x + 6 + 26 * math.cos(rad),
-                  tip_y + 4 + 26 * math.sin(rad)], fill=AMBER, width=4)
-    pen.ellipse([tip_x - 4, tip_y - 6, tip_x + 16, tip_y + 14],
-                fill=ACCENT)
+# ---------------------------------------------------------------- motifs
+
+def motif_missile(draw, cx, cy, s):
+    """A missile on a dashed trajectory toward a target ring."""
+    # trajectory
+    dashed_arc(draw, (cx - 1.45 * s, cy - 0.4 * s, cx + 1.45 * s, cy + 1.35 * s),
+               200, 340, (150, 170, 205), width=max(2, s // 18))
+    # target ring, lower right
+    tx, ty = cx + 1.18 * s, cy + 0.72 * s
+    for r in (0.42 * s, 0.28 * s, 0.14 * s):
+        draw.ellipse([tx - r, ty - r, tx + r, ty + r], outline=(230, 120, 90),
+                     width=max(2, s // 16))
+    # missile body, nose pointing down-right along the arc
+    ang = math.radians(38)
+    dx, dy = math.cos(ang), math.sin(ang)
+    px, py = -dy, dx
+    nose = (cx + 0.9 * s * dx, cy + 0.9 * s * dy)
+    tail = (cx - 0.9 * s * dx, cy - 0.9 * s * dy)
+    half = 0.16 * s
+    body = [
+        (tail[0] + half * px, tail[1] + half * py),
+        (nose[0] - 0.35 * s * dx + half * px, nose[1] - 0.35 * s * dy + half * py),
+        nose,
+        (nose[0] - 0.35 * s * dx - half * px, nose[1] - 0.35 * s * dy - half * py),
+        (tail[0] - half * px, tail[1] - half * py),
+    ]
+    draw.polygon(body, fill=(238, 240, 244), outline=(120, 130, 150))
+    # fins
+    for sgn in (1, -1):
+        fin = [
+            (tail[0] + sgn * half * px, tail[1] + sgn * half * py),
+            (tail[0] + sgn * 0.42 * s * px - 0.1 * s * dx,
+             tail[1] + sgn * 0.42 * s * py - 0.1 * s * dy),
+            (tail[0] - 0.25 * s * dx, tail[1] - 0.25 * s * dy),
+        ]
+        draw.polygon(fin, fill=RED)
+    # flame
+    flame = [
+        (tail[0] + half * px, tail[1] + half * py),
+        (tail[0] - 0.55 * s * dx, tail[1] - 0.55 * s * dy),
+        (tail[0] - half * px, tail[1] - half * py),
+    ]
+    draw.polygon(flame, fill=(245, 166, 35))
 
 
-def art_downchart(pen, box):
-    x0, y0, x1, y1 = box
-    pen.rectangle(box, fill=CARD)
-    pen.line([x0 + 16, y0 + 12, x0 + 16, y1 - 16], fill=INK, width=3)
-    pen.line([x0 + 16, y1 - 16, x1 - 10, y1 - 16], fill=INK, width=3)
-    points = [(x0 + 24, y0 + 26), (x0 + 52, y0 + 40), (x0 + 78, y0 + 34),
-              (x0 + 102, y1 - 52), (x0 + 122, y1 - 26)]
-    pen.line(points, fill=ACCENT, width=5, joint="curve")
-    for px, py in points:
-        pen.ellipse([px - 5, py - 5, px + 5, py + 5], fill=ACCENT)
-    tip_x, tip_y = points[-1]
-    pen.polygon([(tip_x, tip_y + 14), (tip_x - 9, tip_y - 4),
-                 (tip_x + 9, tip_y - 4)], fill=ACCENT)
+def motif_chart(draw, cx, cy, s):
+    """Axes with a plunging line and a down arrow."""
+    x0, y0 = cx - 0.95 * s, cy - 0.8 * s
+    x1, y1 = cx + 0.95 * s, cy + 0.8 * s
+    lw = max(2, s // 22)
+    draw.line([(x0, y0), (x0, y1), (x1, y1)], fill=MUTED, width=lw)
+    pts = [
+        (x0 + 0.1 * s, y0 + 0.25 * s),
+        (cx - 0.35 * s, y0 + 0.12 * s),
+        (cx - 0.05 * s, y0 + 0.45 * s),
+        (cx + 0.3 * s, y0 + 0.38 * s),
+        (x1 - 0.18 * s, y1 - 0.22 * s),
+    ]
+    draw.line(pts, fill=RED, width=max(3, s // 12), joint="curve")
+    tip = pts[-1]
+    draw.polygon([
+        tip,
+        (tip[0] - 0.30 * s, tip[1] + 0.02 * s),
+        (tip[0] - 0.06 * s, tip[1] - 0.26 * s),
+    ], fill=RED)
+    draw.text((x0 + 0.08 * s, y1 - 0.42 * s), "−5%",
+              font=font(SANS_BOLD, int(s * 0.34)), fill=RED)
 
 
-def art_scales(pen, box):
-    x0, y0, x1, y1 = box
-    pen.rectangle(box, fill=(240, 236, 226))
-    cx = (x0 + x1) // 2
-    pen.rectangle([cx - 4, y0 + 30, cx + 4, y1 - 30], fill=INK)
-    pen.rectangle([cx - 22, y1 - 30, cx + 22, y1 - 22], fill=INK)
-    pen.line([x0 + 16, y0 + 36, x1 - 16, y0 + 36], fill=INK, width=5)
-    pen.ellipse([cx - 7, y0 + 26, cx + 7, y0 + 40], fill=AMBER,
-                outline=INK, width=2)
-    for pan_x, drop in ((x0 + 30, 0), (x1 - 30, 10)):
-        pen.line([pan_x, y0 + 36, pan_x - 16, y0 + 78 + drop], fill=INK,
-                 width=2)
-        pen.line([pan_x, y0 + 36, pan_x + 16, y0 + 78 + drop], fill=INK,
-                 width=2)
-        pen.arc([pan_x - 20, y0 + 70 + drop, pan_x + 20, y0 + 98 + drop],
-                0, 180, fill=INK, width=4)
+def motif_scales(draw, cx, cy, s):
+    """A balance: pillar, beam, two pans."""
+    lw = max(2, s // 18)
+    top = cy - 0.85 * s
+    base = cy + 0.85 * s
+    draw.line([(cx, top), (cx, base)], fill=INK, width=lw)
+    draw.line([(cx - 0.45 * s, base), (cx + 0.45 * s, base)], fill=INK, width=lw)
+    draw.line([(cx - 0.85 * s, top + 0.12 * s), (cx + 0.85 * s, top + 0.12 * s)],
+              fill=INK, width=lw)
+    draw.ellipse([cx - 0.09 * s, top - 0.09 * s, cx + 0.09 * s, top + 0.09 * s],
+                 fill=GOLD)
+    for sgn in (-1, 1):
+        px = cx + sgn * 0.85 * s
+        py = top + 0.55 * s
+        draw.line([(px, top + 0.12 * s), (px - 0.3 * s, py)], fill=INK, width=lw)
+        draw.line([(px, top + 0.12 * s), (px + 0.3 * s, py)], fill=INK, width=lw)
+        draw.arc([px - 0.34 * s, py - 0.22 * s, px + 0.34 * s, py + 0.30 * s],
+                 15, 165, fill=GOLD, width=max(3, s // 12))
 
 
-def art_quake(pen, box):
-    x0, y0, x1, y1 = box
-    pen.rectangle(box, fill=(232, 222, 200))
-    ground = y1 - 40
-    pen.rectangle([x0, ground, x1, y1], fill=(160, 120, 80))
-    # seismograph trace
+def motif_quake(draw, cx, cy, s):
+    """A cracked ground line with radiating shock arcs."""
+    lw = max(2, s // 16)
+    gy = cy + 0.45 * s
     pts = []
-    for i in range(13):
-        px = x0 + 10 + i * 9
-        amp = [0, 2, 4, 18, 30, 22, 34, 16, 26, 8, 4, 2, 0][i]
-        pts.append((px, ground - 30 - amp))
-    pen.line(pts, fill=ACCENT, width=3, joint="curve")
-    # crack in the ground
-    crack = [(x0 + 20, ground + 6), (x0 + 44, ground + 16),
-             (x0 + 62, ground + 10), (x0 + 84, ground + 22),
-             (x0 + 106, ground + 14)]
-    pen.line(crack, fill=INK, width=3, joint="curve")
-    # leaning house
-    hx, hy = x0 + 36, ground - 26
-    pen.polygon([(hx, hy), (hx + 20, hy - 14), (hx + 40, hy)],
-                fill=ACCENT, outline=INK)
-    pen.rectangle([hx + 4, hy, hx + 36, ground], fill=CARD, outline=INK,
-                  width=2)
+    xs = [-1.0, -0.72, -0.5, -0.3, -0.12, 0.05, 0.22, 0.42, 0.62, 0.82, 1.0]
+    ys = [0.0, -0.05, 0.10, -0.14, 0.06, -0.20, 0.08, -0.10, 0.04, -0.04, 0.0]
+    for fx, fy in zip(xs, ys):
+        pts.append((cx + fx * s, gy + fy * s))
+    draw.line(pts, fill=INK, width=max(3, s // 10), joint="curve")
+    # crack dropping from the centre
+    crack = [(cx + 0.05 * s, gy - 0.2 * s), (cx - 0.06 * s, gy + 0.12 * s),
+             (cx + 0.08 * s, gy + 0.38 * s), (cx - 0.02 * s, gy + 0.62 * s)]
+    draw.line(crack, fill=RED, width=max(3, s // 12), joint="curve")
+    # shock arcs above
+    for r in (0.55 * s, 0.85 * s, 1.15 * s):
+        draw.arc([cx - r, cy - 0.75 * s - r * 0.45, cx + r, cy - 0.75 * s + r * 0.45],
+                 200, 340, fill=RED, width=lw)
+    draw.text((cx - 0.95 * s, cy - 0.55 * s), "6.8",
+              font=font(SANS_BOLD, int(s * 0.36)), fill=RED)
 
 
-def art_summit(pen, box):
+def motif_flags(draw, cx, cy, s):
+    """Three flag poles with simple national-colour flags."""
+    lw = max(2, s // 20)
+    ground = cy + 0.85 * s
+    flag_sets = [
+        ((60, 80, 160), (240, 240, 240), (200, 50, 50)),   # blue white red
+        ((200, 40, 40), (245, 200, 60), (200, 40, 40)),    # red gold red
+        ((240, 240, 240), (60, 90, 170), (200, 50, 50)),   # white blue red
+    ]
+    for i, cols in enumerate(flag_sets):
+        fx = cx + (i - 1) * 0.68 * s
+        top = cy - 0.8 * s + (0.12 * s if i != 1 else 0)
+        draw.line([(fx, top), (fx, ground)], fill=INK, width=lw)
+        fw, fh = 0.5 * s, 0.36 * s
+        stripe = fh / 3.0
+        for j, col in enumerate(cols):
+            draw.rectangle([fx, top + j * stripe, fx + fw, top + (j + 1) * stripe],
+                           fill=col)
+        draw.rectangle([fx, top, fx + fw, top + fh], outline=MUTED, width=1)
+
+
+def motif_handshake(draw, cx, cy, s):
+    """Two clasped hands, drawn as angled rounded shapes."""
+    lw = max(2, s // 16)
+    # left forearm coming from lower-left, right from lower-right
+    draw.polygon([
+        (cx - 1.0 * s, cy + 0.55 * s), (cx - 0.25 * s, cy - 0.1 * s),
+        (cx + 0.05 * s, cy + 0.18 * s), (cx - 0.55 * s, cy + 0.8 * s),
+    ], fill=(66, 96, 150), outline=INK)
+    draw.polygon([
+        (cx + 1.0 * s, cy + 0.55 * s), (cx + 0.25 * s, cy - 0.1 * s),
+        (cx - 0.05 * s, cy + 0.18 * s), (cx + 0.55 * s, cy + 0.8 * s),
+    ], fill=(150, 60, 60), outline=INK)
+    # clasped hands in the middle
+    draw.rounded_rectangle(
+        [cx - 0.34 * s, cy - 0.12 * s, cx + 0.34 * s, cy + 0.30 * s],
+        radius=int(0.12 * s), fill=(232, 190, 150), outline=INK, width=lw)
+    # finger lines
+    for i in range(3):
+        fx = cx - 0.18 * s + i * 0.18 * s
+        draw.line([(fx, cy + 0.02 * s), (fx, cy + 0.22 * s)], fill=INK, width=lw)
+    # spark of agreement above
+    for ang in (250, 270, 290):
+        a = math.radians(ang)
+        x1 = cx + 0.35 * s * math.cos(a)
+        y1 = cy - 0.35 * s + 0.35 * s * math.sin(a)
+        x2 = cx + 0.55 * s * math.cos(a)
+        y2 = cy - 0.35 * s + 0.55 * s * math.sin(a)
+        draw.line([(x1, y1), (x2, y2)], fill=GOLD, width=lw)
+
+
+def motif_ballot(draw, cx, cy, s):
+    """A ballot box with a ticked paper going in."""
+    lw = max(2, s // 16)
+    bx0, bx1 = cx - 0.75 * s, cx + 0.75 * s
+    by0, by1 = cy + 0.05 * s, cy + 0.8 * s
+    draw.rectangle([bx0, by0, bx1, by1], fill=(66, 96, 150), outline=INK, width=lw)
+    draw.rectangle([bx0 - 0.08 * s, by0 - 0.14 * s, bx1 + 0.08 * s, by0],
+                   fill=NAVY, outline=INK, width=lw)
+    # slot
+    draw.rectangle([cx - 0.35 * s, by0 - 0.10 * s, cx + 0.35 * s, by0 - 0.04 * s],
+                   fill=PAPER)
+    # paper
+    px0, px1 = cx - 0.28 * s, cx + 0.28 * s
+    py0, py1 = cy - 0.85 * s, by0 - 0.06 * s
+    draw.rectangle([px0, py0, px1, py1], fill=(255, 255, 255), outline=INK, width=lw)
+    # tick
+    draw.line([(px0 + 0.10 * s, py0 + 0.30 * s), (px0 + 0.22 * s, py0 + 0.44 * s),
+               (px1 - 0.08 * s, py0 + 0.14 * s)],
+              fill=RED, width=max(3, s // 10), joint="curve")
+
+
+MOTIFS = {
+    "missile": motif_missile,
+    "chart": motif_chart,
+    "scales": motif_scales,
+    "quake": motif_quake,
+    "flags": motif_flags,
+    "handshake": motif_handshake,
+    "ballot": motif_ballot,
+}
+
+
+# ---------------------------------------------------------------- layout
+
+def panel(draw, box, story, dark=False, motif_scale=58, head_size=30, body_size=19):
     x0, y0, x1, y1 = box
-    pen.rectangle(box, fill=(234, 238, 246))
-    table_y = y0 + 96
-    pen.rectangle([x0 + 14, table_y, x1 - 14, table_y + 12], fill=INK)
-    pen.rectangle([x0 + 24, table_y + 12, x0 + 32, y1 - 16], fill=INK)
-    pen.rectangle([x1 - 32, table_y + 12, x1 - 24, y1 - 16], fill=INK)
-    flags = [(x0 + 20, (40, 90, 170)), ((x0 + x1) // 2 - 14, ACCENT),
-             (x1 - 48, (200, 40, 40))]
-    for flag_x, colour in flags:
-        pen.rectangle([flag_x, y0 + 30, flag_x + 28, y0 + 58],
-                      fill=colour, outline=INK, width=2)
-        pen.line([flag_x, y0 + 30, flag_x, table_y], fill=INK, width=3)
+    bg = NAVY if dark else (255, 252, 245)
+    draw.rectangle(box, fill=bg, outline=RULE, width=2)
+    pad = 16
+    ink = (245, 243, 238) if dark else INK
+    body_fill = (205, 212, 228) if dark else (52, 48, 44)
+    # kicker with a small red square
+    ky = y0 + pad
+    draw.rectangle([x0 + pad, ky + 2, x0 + pad + 12, ky + 14], fill=RED)
+    draw.text((x0 + pad + 20, ky), story["kicker"],
+              font=font(SANS_BOLD, 17), fill=RED if not dark else (240, 130, 120))
+    # motif at top-right of the panel
+    MOTIFS[story["motif"]](draw, x1 - pad - motif_scale, y0 + pad + motif_scale,
+                           motif_scale)
+    # headline, leaving room for the motif
+    head_w = (x1 - x0) - 2 * pad - 2 * motif_scale - 10
+    y = draw_text_block(draw, x0 + pad, ky + 30, story["headline"],
+                        font(SERIF_BOLD, head_size), ink, head_w)
+    # body across the full width, below whichever is lower
+    body_y = max(y + 6, y0 + pad + 2 * motif_scale + 14)
+    draw_text_block(draw, x0 + pad, body_y, story["body"],
+                    font(SANS, body_size), body_fill, (x1 - x0) - 2 * pad)
 
 
-ART = [art_downchart, art_scales, art_quake, art_summit]
+def render(stories):
+    img = Image.new("RGB", (W, H), PAPER)
+    d = ImageDraw.Draw(img)
+    margin = 36
 
+    # ---- masthead
+    name_f = font(SERIF_BOLD, 64)
+    name = stories["paper"]
+    tw = d.textlength(name, font=name_f)
+    d.text(((W - tw) / 2, 22), name, font=name_f, fill=INK)
+    date_f = font(SANS_BOLD, 24)
+    date = stories["date"]
+    tw = d.textlength(date, font=date_f)
+    d.text(((W - tw) / 2, 100), date, font=date_f, fill=RED)
+    line_f = font(SANS, 17)
+    line = stories["edition_line"]
+    tw = d.textlength(line, font=line_f)
+    d.text(((W - tw) / 2, 134), line, font=line_f, fill=MUTED)
+    d.rectangle([margin, 164, W - margin, 168], fill=RULE)
+    d.rectangle([margin, 172, W - margin, 174], fill=RULE)
 
-# ------------------------------------------------------------------ page
-class Page:
-    def __init__(self, data):
-        self.data = data
-        self.canvas = Image.new("RGB", (SIDE, SIDE), PAPER)
-        self.pen = ImageDraw.Draw(self.canvas)
-        self.y = 24
+    # ---- lead story
+    lead_box = (margin, 186, W - margin, 438)
+    panel(d, lead_box, stories["lead"], dark=True,
+          motif_scale=70, head_size=39, body_size=20)
 
-    def rule(self, weight=2, before=0, after=0):
-        self.y += before
-        self.pen.line([(EDGE, self.y), (SIDE - EDGE, self.y)],
-                      fill=INK, width=weight)
-        self.y += weight + after
+    # ---- 2x2 grid
+    grid = stories["grid"]
+    gx0, gy0 = margin, 450
+    gw = (W - 2 * margin - 12) // 2
+    gh = 182
+    for i, story in enumerate(grid):
+        col, row = i % 2, i // 2
+        x0 = gx0 + col * (gw + 12)
+        y0 = gy0 + row * (gh + 12)
+        panel(d, (x0, y0, x0 + gw, y0 + gh), story,
+              motif_scale=42, head_size=24, body_size=15)
 
-    def masthead(self):
-        eyebrow = typeface(19, bold=True)
-        self.y = centred(self.pen, self.y,
-                         "ONE DAY · ONE PAGE · WORLD NEWS", eyebrow, SOFT) + 8
-        title = typeface(52, bold=True, serif=True)
-        self.y = centred(self.pen, self.y, "THE WORLD IN ONE PAGE",
-                         title, INK) + 10
-        stamp = typeface(23, bold=True)
-        self.y = centred(self.pen, self.y, self.data["date"], stamp,
-                         ACCENT) + 10
-        self.rule(weight=4, after=3)
-        self.rule(weight=1, after=12)
+    # ---- bottom strip
+    by0 = gy0 + 2 * gh + 12 + 12
+    bottom = stories["bottom"]
+    for i, story in enumerate(bottom):
+        x0 = gx0 + i * (gw + 12)
+        panel(d, (x0, by0, x0 + gw, by0 + 134), story,
+              motif_scale=30, head_size=19, body_size=13)
 
-    def kicker(self, x, y, text):
-        face = typeface(19, bold=True)
-        pad = 9
-        width = self.pen.textlength(text, font=face)
-        self.pen.rounded_rectangle([x, y, x + width + 2 * pad, y + 28],
-                                   radius=4, fill=ACCENT)
-        self.pen.text((x + pad, y + 4), text, font=face, fill=CARD)
-        return y + 36
+    # ---- footer
+    foot_f = font(SANS, 15)
+    foot = "The day in one page  ·  " + date
+    tw = d.textlength(foot, font=foot_f)
+    d.text(((W - tw) / 2, H - 34), foot, font=foot_f, fill=MUTED)
 
-    def lead(self):
-        story = self.data["lead"]
-        top, height = self.y, 272
-        self.pen.rectangle([EDGE, top, SIDE - EDGE, top + height],
-                           fill=CARD, outline=INK, width=2)
-        art_missile(self.pen, (EDGE + 2, top + 2, EDGE + 378,
-                               top + height - 2))
-        self.pen.line([EDGE + 380, top, EDGE + 380, top + height],
-                      fill=INK, width=2)
-        tx = EDGE + 402
-        limit = SIDE - EDGE - tx - 18
-        y = self.kicker(tx, top + 16, story["kicker"])
-        head = typeface(40, bold=True)
-        y = paint_lines(self.pen, tx, y,
-                        split_lines(self.pen, story["headline"], head,
-                                    limit)[:3], head, INK, 47)
-        body = typeface(24)
-        paint_lines(self.pen, tx, y + 4,
-                    split_lines(self.pen, story["summary"], body,
-                                limit)[:4], body, SOFT, 30)
-        self.y = top + height + 18
-
-    def cell(self, x, top, story, art):
-        height = 182
-        self.pen.rectangle([x, top, x + COLUMN, top + height],
-                           fill=CARD, outline=INK, width=2)
-        art(self.pen, (x + 2, top + 2, x + 126, top + height - 2))
-        self.pen.line([x + 128, top, x + 128, top + height],
-                      fill=(205, 200, 190), width=1)
-        tx = x + 140
-        limit = x + COLUMN - tx - 12
-        y = self.kicker(tx, top + 10, story["kicker"])
-        head = typeface(25, bold=True)
-        y = paint_lines(self.pen, tx, y,
-                        split_lines(self.pen, story["headline"], head,
-                                    limit)[:2], head, INK, 29)
-        body = typeface(19)
-        paint_lines(self.pen, tx, y + 2,
-                    split_lines(self.pen, story["summary"], body,
-                                limit)[:3], body, SOFT, 23)
-        return top + height
-
-    def grid(self):
-        stories = self.data["grid"]
-        bottom = self.cell(EDGE, self.y, stories[0], ART[0])
-        self.cell(EDGE + COLUMN + GAP, self.y, stories[1], ART[1])
-        self.y = bottom + 18
-        bottom = self.cell(EDGE, self.y, stories[2], ART[2])
-        self.cell(EDGE + COLUMN + GAP, self.y, stories[3], ART[3])
-        self.y = bottom + 18
-
-    def bottom_pair(self):
-        stories = self.data["bottom"]
-        top = self.y
-        self.pen.rectangle([EDGE, top, SIDE - EDGE, top + 118],
-                           fill=WASH, outline=INK, width=1)
-        for index, story in enumerate(stories):
-            x = EDGE + 18 + index * (COLUMN + GAP)
-            head = typeface(24, bold=True)
-            y = paint_lines(
-                self.pen, x, top + 12,
-                split_lines(self.pen, story["headline"], head,
-                            COLUMN - 24)[:2], head, INK, 28)
-            body = typeface(19)
-            paint_lines(self.pen, x, y + 2,
-                        split_lines(self.pen, story["summary"], body,
-                                    COLUMN - 24)[:2], body, SOFT, 23)
-        self.y = top + 118 + 10
-
-    def footer(self):
-        face = typeface(18)
-        centred(self.pen, self.y, self.data["footer"], face, FAINT)
-
-    def render(self, path):
-        self.masthead()
-        self.lead()
-        self.grid()
-        self.bottom_pair()
-        self.footer()
-        self.pen.rectangle([5, 5, SIDE - 6, SIDE - 6], outline=INK,
-                           width=2)
-        self.canvas.save(path, "PNG", optimize=True)
+    return img
 
 
 def main():
-    with open(os.path.join(ROOT, "stories.json"), encoding="utf-8") as fh:
-        data = json.load(fh)
-    out = os.path.join(ROOT, "entry.png")
-    Page(data).render(out)
-    print("entry.png written:", os.path.getsize(out), "bytes")
+    with open(os.path.join(HERE, "stories.json"), encoding="utf-8") as fh:
+        stories = json.load(fh)
+    img = render(stories)
+    out = os.path.join(HERE, "entry.png")
+    img.save(out, "PNG", optimize=True)
+    print("wrote", out, os.path.getsize(out), "bytes")
 
 
 if __name__ == "__main__":
