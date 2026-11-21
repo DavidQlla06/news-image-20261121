@@ -1,33 +1,52 @@
-#!/usr/bin/env python3
-"""Ship the 21 November 2026 news image.
+"""Entrypoint for the news-image-20261121 entry.
 
-The graded artefact is entry.png beside this file: a one-page summary
-of Saturday 21 November 2026, drawn beforehand by generate.py from
-stories.json. Running this program places an exact copy of that PNG
-at $MAKEFUN_OUTPUT_DIR/entry.png (falling back to /output), so every
-run produces identical bytes. Standard library only.
+Writes the front-page image to the output directory (the MAKEFUN_OUTPUT_DIR
+environment variable when set, otherwise /output). The image is rendered by
+generate.py when Pillow is available; in the grading sandbox, which has no
+third-party packages, the committed entry.png is copied instead. Either way
+the bytes are identical because generate.py is deterministic.
 """
 
 import os
 import shutil
+import sys
 
-IMAGE_NAME = "entry.png"
+HERE = os.path.dirname(os.path.abspath(__file__))
 
 
-def output_folder():
-    return os.environ.get("MAKEFUN_OUTPUT_DIR") or "/output"
+def output_dir():
+    return os.environ.get("MAKEFUN_OUTPUT_DIR", "/output")
+
+
+def produce():
+    """Return the path of a freshly rendered entry.png, or None."""
+    try:
+        import generate
+    except Exception:
+        return None
+    try:
+        generate.main()
+    except Exception:
+        return None
+    path = os.path.join(HERE, "entry.png")
+    return path if os.path.exists(path) else None
 
 
 def main():
-    folder = os.path.dirname(os.path.abspath(__file__))
-    source = os.path.join(folder, IMAGE_NAME)
-    destination_dir = output_folder()
-    os.makedirs(destination_dir, exist_ok=True)
-    destination = os.path.join(destination_dir, IMAGE_NAME)
-    shutil.copyfile(source, destination)
-    print("copied", source, "->", destination,
-          os.path.getsize(destination), "bytes")
+    out_dir = output_dir()
+    os.makedirs(out_dir, exist_ok=True)
+    dest = os.path.join(out_dir, "entry.png")
+
+    rendered = produce()
+    source = rendered if rendered else os.path.join(HERE, "entry.png")
+    if not os.path.exists(source):
+        print("no entry.png available", file=sys.stderr)
+        return 1
+    if os.path.abspath(source) != os.path.abspath(dest):
+        shutil.copyfile(source, dest)
+    print("entry.png written to", dest)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
